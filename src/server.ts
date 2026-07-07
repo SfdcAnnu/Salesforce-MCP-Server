@@ -6,7 +6,7 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js'
 import wellknownRouter from './routes/wellknown'
 import authRouter from './routes/auth'
-import { registerAllTools } from './tools/index'
+import { registerAllTools, TOOL_SUMMARIES } from './tools/index'
 import { unlinkSession, storeVaultTokens } from './lib/session'
 
 const app = express()
@@ -22,6 +22,13 @@ app.use((req: any, res: any, next: any) => {
 
 app.get('/', (req: any, res: any) => {
   res.json({ name: 'salesforce-mcp', version: '1.0.0', status: 'running' })
+})
+
+// Public, unauthenticated tool catalog — static metadata only, no execution.
+// Portals use this to render tool pickers before an org is connected;
+// the authenticated equivalent is MCP tools/list on /mcp.
+app.get('/tools', (req: any, res: any) => {
+  res.json({ server: 'salesforce-mcp', count: TOOL_SUMMARIES.length, tools: TOOL_SUMMARIES })
 })
 
 app.use('/', wellknownRouter)
