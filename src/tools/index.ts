@@ -15,6 +15,26 @@ import {
   registerDeleteRelatedRecord
 } from './relationships'
 
+/**
+ * Static tool catalog for the public GET /tools endpoint.
+ * Lets portals render an accurate tool picker BEFORE any org is
+ * connected (the authenticated path is MCP tools/list on /mcp).
+ * Keep in sync with registerAllTools below.
+ */
+export const TOOL_SUMMARIES = [
+  { name: 'getObjectSchema',          readOnly: true,  description: 'Describe an SObject: fields, types, picklists, relationships' },
+  { name: 'soqlQuery',                readOnly: true,  description: 'Run a SOQL query' },
+  { name: 'find',                     readOnly: true,  description: 'SOSL text search across multiple objects' },
+  { name: 'getUserInfo',              readOnly: true,  description: 'Connected Salesforce user identity' },
+  { name: 'listRecentSobjectRecords', readOnly: true,  description: 'Recently viewed records for an SObject' },
+  { name: 'getRelatedRecords',        readOnly: true,  description: 'Child/related records for a parent record' },
+  { name: 'createSobjectRecord',      readOnly: false, description: 'Insert a new record' },
+  { name: 'updateSobjectRecord',      readOnly: false, description: 'Update fields on an existing record' },
+  { name: 'deleteSobjectRecord',      readOnly: false, description: 'Delete a record' },
+  { name: 'updateRelatedRecord',      readOnly: false, description: 'Update a related child record' },
+  { name: 'deleteRelatedRecord',      readOnly: false, description: 'Delete a related child record' }
+]
+
 export function registerAllTools(
   server: McpServer,
   req: Request,
