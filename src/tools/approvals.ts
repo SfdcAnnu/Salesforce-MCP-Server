@@ -14,8 +14,7 @@ import { z } from 'zod'
 import { Request } from 'express'
 import { resolveSFConnection, notAuthenticatedError, sfApiError } from '../lib/sf'
 
-const APPROVAL_REST_CHUNK = 25    // /process/approvals limit per call
-const UPDATE_CHUNK        = 200   // sobject collection update limit
+const UPDATE_CHUNK = 200   // sobject collection update limit
 
 function chunk<T>(arr: T[], size: number): T[][] {
   const out: T[][] = []
@@ -44,30 +43,68 @@ ProcessInstanceWorkitem first. Processes any number of ids (auto-chunked).`,
       const conn = await resolveSFConnection(req, sessionId)
       if (!conn) return notAuthenticatedError(process.env.BASE_URL!)
       try {
+        // Map workitem → ProcessInstance up front. Also filters out ids that
+        // were already processed between the user's list call and now.
+        const idList = workitemIds.map(id => `'${String(id).replace(/['\\]/g, '')}'`).join(',')
+        const wiRes = await conn.query<{ Id: string; ProcessInstanceId: string }>(
+          `SELECT Id, ProcessInstanceId FROM ProcessInstanceWorkitem WHERE Id IN (${idList})`)
+        const instanceByWorkitem = new Map(wiRes.records.map(r => [r.Id, r.ProcessInstanceId]))
+
         const results: Array<{ workitemId: string; success: boolean; errors?: unknown }> = []
-        for (const batch of chunk(workitemIds, APPROVAL_REST_CHUNK)) {
-          const payload = {
-            requests: batch.map(id => ({
-              actionType: 'Removed',
-              contextId:  id,
-              comments:   comment ?? 'Recalled via Archon AI'
-            }))
+        for (const id of workitemIds) {
+          if (!instanceByWorkitem.has(id)) {
+            results.push({ workitemId: id, success: false,
+              errors: 'not found or already processed (approved/rejected/recalled)' })
           }
-          // Explicit versioned path — a bare '/process/approvals' resolves
-          // against the instance ROOT in jsforce v3 (404 HTML), not the REST base.
-          const approvalsUrl = `/services/data/v${conn.version}/process/approvals`
-          const res = await conn.request<Array<{ success: boolean; errors?: unknown; instanceStatus?: string }>>({
+        }
+
+        const approvalsUrl = `/services/data/v${conn.version}/process/approvals`
+        const recallOne = async (contextId: string) => {
+          const payload = { requests: [{
+            actionType: 'Removed',
+            contextId,
+            comments: comment ?? 'Recalled via Archon AI'
+          }] }
+          const res = await conn.request<Array<{ success: boolean; errors?: unknown }>>({
             method: 'POST',
             url:    approvalsUrl,
             body:   JSON.stringify(payload),
             headers: { 'Content-Type': 'application/json' }
           })
-          res.forEach((r, i) => results.push({
-            workitemId: batch[i],
-            success:    r.success === true,
-            ...(r.success !== true && { errors: r.errors })
-          }))
+          return res[0]
         }
+
+        // Some org versions accept the workitem id as contextId, others gack
+        // and want the ProcessInstance id — try workitem first, then fall
+        // back per item. One item's failure never blocks the rest.
+        for (const [wiId, piId] of instanceByWorkitem) {
+          try {
+            const r = await recallOne(wiId)
+            if (r?.success === true) {
+              results.push({ workitemId: wiId, success: true })
+              continue
+            }
+            const retry = await recallOne(piId)
+            results.push({
+              workitemId: wiId,
+              success: retry?.success === true,
+              ...(retry?.success !== true && { errors: retry?.errors ?? r?.errors })
+            })
+          } catch (errFirst) {
+            try {
+              const retry = await recallOne(piId)
+              results.push({
+                workitemId: wiId,
+                success: retry?.success === true,
+                ...(retry?.success !== true && { errors: retry?.errors })
+              })
+            } catch (errSecond: any) {
+              results.push({ workitemId: wiId, success: false,
+                errors: errSecond?.message ?? String(errSecond) })
+            }
+          }
+        }
+
         const recalled = results.filter(r => r.success).length
         return { content: [{ type: 'text', text: JSON.stringify({
           requested: workitemIds.length, recalled,
