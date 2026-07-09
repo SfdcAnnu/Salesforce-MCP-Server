@@ -21,19 +21,29 @@ RULES:
 • Child subquery: SELECT Id, (SELECT Id, Subject FROM Cases) FROM Account WHERE Id = 'xxx'
 
 APPROVAL PROCESS RECIPE (pending items live in ProcessInstanceWorkitem):
-• Pending approvals + submitter + submitter's manager, ONE query:
+• "MY pending approvals" is AMBIGUOUS — it can mean (a) items waiting for MY
+  approval (ActorId = my user id) OR (b) items I SUBMITTED that are still
+  pending (ProcessInstance.SubmittedById = my user id). Fetch BOTH in one
+  query and group the results when presenting — do not silently pick one:
   SELECT Id, ActorId, Actor.Name, Actor.Type,
          ProcessInstance.TargetObjectId, ProcessInstance.Status,
-         ProcessInstance.SubmittedBy.Name, ProcessInstance.SubmittedBy.Manager.Name
+         ProcessInstance.SubmittedById, ProcessInstance.SubmittedBy.Name,
+         ProcessInstance.SubmittedBy.Manager.Name
   FROM ProcessInstanceWorkitem
-  WHERE ProcessInstance.Status = 'Pending' LIMIT 50
+  WHERE ProcessInstance.Status = 'Pending'
+    AND (ActorId = '<myUserId>' OR ProcessInstance.SubmittedById = '<myUserId>')
+  LIMIT 50
+  (Call getUserInfo first for <myUserId>. Drop the whole AND(...) clause for
+  org-wide pending approvals.)
 • Actor (current approver) is POLYMORPHIC — a User OR a Queue. Actor.Type says
   which. To get an approver's manager: collect ActorIds where Actor.Type = 'User',
   then run a second query:
   SELECT Id, Name, ManagerId, Manager.Name FROM User WHERE Id IN ('005...','005...')
   Queues have no manager. Do NOT write Actor.Manager.Name — polymorphic traversal fails.
 • To ACT on results, pass the workitem Ids (04i...) to recallApprovals or
-  reassignApprovals — do not hand-edit approver assignments with update tools.`,
+  reassignApprovals — do not hand-edit approver assignments with update tools.
+• Recall REMOVES the request entirely (record must be re-submitted).
+  To hand the approval to a different approver, use reassignApprovals instead.`,
 
     {
       query: z.string().describe(
