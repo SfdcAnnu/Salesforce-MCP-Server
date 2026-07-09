@@ -21,20 +21,18 @@ RULES:
 • Child subquery: SELECT Id, (SELECT Id, Subject FROM Cases) FROM Account WHERE Id = 'xxx'
 
 APPROVAL PROCESS RECIPE (pending items live in ProcessInstanceWorkitem):
-• "MY pending approvals" is AMBIGUOUS — it can mean (a) items waiting for MY
-  approval (ActorId = my user id) OR (b) items I SUBMITTED that are still
-  pending (ProcessInstance.SubmittedById = my user id). Fetch BOTH in one
-  query and group the results when presenting — do not silently pick one:
+• "MY pending approvals" is AMBIGUOUS — it can mean (a) items AWAITING the
+  user's approval (filter: ActorId = user's id) or (b) items the user
+  SUBMITTED that are still pending (filter: ProcessInstance.SubmittedById =
+  user's id). ASK the user which they mean before querying — do not guess.
+  Base query (add the chosen filter; getUserInfo gives the user's id):
   SELECT Id, ActorId, Actor.Name, Actor.Type,
          ProcessInstance.TargetObjectId, ProcessInstance.Status,
          ProcessInstance.SubmittedById, ProcessInstance.SubmittedBy.Name,
          ProcessInstance.SubmittedBy.Manager.Name
   FROM ProcessInstanceWorkitem
   WHERE ProcessInstance.Status = 'Pending'
-    AND (ActorId = '<myUserId>' OR ProcessInstance.SubmittedById = '<myUserId>')
   LIMIT 50
-  (Call getUserInfo first for <myUserId>. Drop the whole AND(...) clause for
-  org-wide pending approvals.)
 • Actor (current approver) is POLYMORPHIC — a User OR a Queue. Actor.Type says
   which. To get an approver's manager: collect ActorIds where Actor.Type = 'User',
   then run a second query:
