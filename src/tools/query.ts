@@ -18,7 +18,22 @@ RULES:
 • Always include WHERE and LIMIT clauses
 • Filter on indexed fields (Id, Name, foreign key IDs) to avoid timeouts
 • Parent traversal: SELECT Contact.Account.Name FROM Contact
-• Child subquery: SELECT Id, (SELECT Id, Subject FROM Cases) FROM Account WHERE Id = 'xxx'`,
+• Child subquery: SELECT Id, (SELECT Id, Subject FROM Cases) FROM Account WHERE Id = 'xxx'
+
+APPROVAL PROCESS RECIPE (pending items live in ProcessInstanceWorkitem):
+• Pending approvals + submitter + submitter's manager, ONE query:
+  SELECT Id, ActorId, Actor.Name, Actor.Type,
+         ProcessInstance.TargetObjectId, ProcessInstance.Status,
+         ProcessInstance.SubmittedBy.Name, ProcessInstance.SubmittedBy.Manager.Name
+  FROM ProcessInstanceWorkitem
+  WHERE ProcessInstance.Status = 'Pending' LIMIT 50
+• Actor (current approver) is POLYMORPHIC — a User OR a Queue. Actor.Type says
+  which. To get an approver's manager: collect ActorIds where Actor.Type = 'User',
+  then run a second query:
+  SELECT Id, Name, ManagerId, Manager.Name FROM User WHERE Id IN ('005...','005...')
+  Queues have no manager. Do NOT write Actor.Manager.Name — polymorphic traversal fails.
+• To ACT on results, pass the workitem Ids (04i...) to recallApprovals or
+  reassignApprovals — do not hand-edit approver assignments with update tools.`,
 
     {
       query: z.string().describe(
