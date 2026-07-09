@@ -53,9 +53,12 @@ ProcessInstanceWorkitem first. Processes any number of ids (auto-chunked).`,
               comments:   comment ?? 'Recalled via Archon AI'
             }))
           }
+          // Explicit versioned path — a bare '/process/approvals' resolves
+          // against the instance ROOT in jsforce v3 (404 HTML), not the REST base.
+          const approvalsUrl = `/services/data/v${conn.version}/process/approvals`
           const res = await conn.request<Array<{ success: boolean; errors?: unknown; instanceStatus?: string }>>({
             method: 'POST',
-            url:    '/process/approvals',
+            url:    approvalsUrl,
             body:   JSON.stringify(payload),
             headers: { 'Content-Type': 'application/json' }
           })
