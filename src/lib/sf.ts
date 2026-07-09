@@ -31,6 +31,7 @@ export async function resolveSFConnection(req: Request, sessionId: string): Prom
         clientSecret: vault.clientSecret ?? process.env.SF_CLIENT_SECRET
       })
       const conn = new jsforce.Connection({
+        version: '62.0',
         oauth2,
         instanceUrl: vault.instanceUrl,
         accessToken: vault.accessToken,
@@ -58,7 +59,7 @@ export async function resolveSFConnection(req: Request, sessionId: string): Prom
         ?? loginUrl
       const instanceUrl = rawUrl.replace(/\/[0-9A-Za-z]{15,18}$/, '').replace(/\/$/, '')
       console.log('[SF] PATH A — instanceUrl:', instanceUrl)
-      return new jsforce.Connection({ accessToken, instanceUrl })
+      return new jsforce.Connection({ accessToken, instanceUrl, version: '62.0' })
     } catch (err: any) {
       console.error('[SF] PATH A — identity lookup failed (token likely expired):', err.message)
       // Signal "needs re-auth" rather than returning a broken connection.
@@ -77,7 +78,7 @@ export async function resolveSFConnection(req: Request, sessionId: string): Prom
     console.log('[SF] Password set:', process.env.SF_PASSWORD ? 'YES length=' + process.env.SF_PASSWORD.length : 'NO')
     console.log('[SF] LoginUrl:', process.env.SF_LOGIN_URL)
     try {
-      const conn = new jsforce.Connection({ loginUrl: process.env.SF_LOGIN_URL ?? 'https://login.salesforce.com' })
+      const conn = new jsforce.Connection({ loginUrl: process.env.SF_LOGIN_URL ?? 'https://login.salesforce.com', version: '62.0' })
       const result = await conn.login(process.env.SF_USERNAME!, process.env.SF_PASSWORD!)
       console.log('[SF] Login SUCCESS � userId:', result.id)
       return conn
@@ -97,6 +98,7 @@ export async function resolveSFConnection(req: Request, sessionId: string): Prom
     clientSecret: process.env.SF_CLIENT_SECRET
   })
   const conn = new jsforce.Connection({
+        version: '62.0',
     oauth2,
     instanceUrl: session.instanceUrl,
     accessToken: session.accessToken,
