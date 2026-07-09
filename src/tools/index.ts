@@ -7,6 +7,7 @@ import {
   registerListRecentRecords,
   registerCreateRecord,
   registerUpdateRecord,
+  registerBulkUpdateRecords,
   registerDeleteRecord
 } from './records'
 import {
@@ -14,6 +15,10 @@ import {
   registerUpdateRelatedRecord,
   registerDeleteRelatedRecord
 } from './relationships'
+import {
+  registerRecallApprovals,
+  registerReassignApprovals
+} from './approvals'
 
 /**
  * Static tool catalog for the public GET /tools endpoint.
@@ -23,16 +28,19 @@ import {
  */
 export const TOOL_SUMMARIES = [
   { name: 'getObjectSchema',          readOnly: true,  description: 'Describe an SObject: fields, types, picklists, relationships' },
-  { name: 'soqlQuery',                readOnly: true,  description: 'Run a SOQL query' },
+  { name: 'soqlQuery',                readOnly: true,  description: 'Run a SOQL query (incl. pending-approval lookups)' },
   { name: 'find',                     readOnly: true,  description: 'SOSL text search across multiple objects' },
   { name: 'getUserInfo',              readOnly: true,  description: 'Connected Salesforce user identity' },
   { name: 'listRecentSobjectRecords', readOnly: true,  description: 'Recently viewed records for an SObject' },
   { name: 'getRelatedRecords',        readOnly: true,  description: 'Child/related records for a parent record' },
   { name: 'createSobjectRecord',      readOnly: false, description: 'Insert a new record' },
-  { name: 'updateSobjectRecord',      readOnly: false, description: 'Update fields on an existing record' },
+  { name: 'updateSobjectRecord',      readOnly: false, description: 'Update fields on one record' },
+  { name: 'bulkUpdateSobjectRecords', readOnly: false, description: 'Update many records in one call (up to 200/batch)' },
   { name: 'deleteSobjectRecord',      readOnly: false, description: 'Delete a record' },
   { name: 'updateRelatedRecord',      readOnly: false, description: 'Update a related child record' },
-  { name: 'deleteRelatedRecord',      readOnly: false, description: 'Delete a related child record' }
+  { name: 'deleteRelatedRecord',      readOnly: false, description: 'Delete a related child record' },
+  { name: 'recallApprovals',          readOnly: false, description: 'Bulk recall/revoke pending approval requests' },
+  { name: 'reassignApprovals',        readOnly: false, description: 'Bulk reassign approvals: to a user, submitter’s manager, or escalate to approver’s manager' }
 ]
 
 export function registerAllTools(
@@ -48,8 +56,11 @@ export function registerAllTools(
   registerGetRelatedRecords(server, req, sessionId)
   registerCreateRecord(server, req, sessionId)
   registerUpdateRecord(server, req, sessionId)
+  registerBulkUpdateRecords(server, req, sessionId)
   registerDeleteRecord(server, req, sessionId)
   registerUpdateRelatedRecord(server, req, sessionId)
   registerDeleteRelatedRecord(server, req, sessionId)
-  console.log('[MCP] 11 tools registered')
+  registerRecallApprovals(server, req, sessionId)
+  registerReassignApprovals(server, req, sessionId)
+  console.log('[MCP] 14 tools registered')
 }
