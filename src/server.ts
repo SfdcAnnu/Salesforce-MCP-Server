@@ -21,7 +21,7 @@ app.use((req: any, res: any, next: any) => {
 })
 
 app.get('/', (req: any, res: any) => {
-  res.json({ name: 'salesforce-mcp', version: '1.0.0', status: 'running' })
+  res.json({ name: 'salesforce-mcp', version: '1.1.0', build: 'v62-recall-fallback', status: 'running' })
 })
 
 // Public, unauthenticated tool catalog — static metadata only, no execution.
