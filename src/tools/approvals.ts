@@ -27,9 +27,11 @@ function chunk<T>(arr: T[], size: number): T[][] {
 export function registerRecallApprovals(server: McpServer, req: Request, sessionId: string) {
   server.tool(
     'recallApprovals',
-    `Bulk-recalls (revokes) pending approval submissions via the standard
-recallApprovalSubmission action. Removes the workitems from every
-approver's queue and sets the process status to Removed.
+    `Bulk-recalls (revokes) pending approval submissions. Handles BOTH
+approval frameworks automatically: the unified framework (resolves the
+ApprovalSubmission id and calls recallApprovalSubmission) and classic
+approval processes (/process/approvals actionType=Removed). Removes the
+workitems from every approver's queue.
 
 SAFETY: ALWAYS confirm with the user before recalling — recall cannot be
 undone; records must be re-submitted for approval.
@@ -53,18 +55,36 @@ insufficient-privileges error.`,
       try {
         const clean = (s: string) => String(s).replace(/['\\]/g, '')
         const quoted = (arr: string[]) => arr.map(id => `'${clean(id)}'`).join(',')
+        const comments = comment ?? 'Recalled via Archon AI'
 
-        // Resolve 04i (workitem) and 04g (process instance) ids to their
-        // target record ids — the recall action wants the RECORD id.
-        const targetByInput = new Map<string, string>()
+        // Resolve every input to its target record. Keep classic ids when
+        // we have them — the classic fallback path needs them.
+        interface Target { record: string; workitemId?: string; instanceId?: string; inputs: string[] }
+        const byRecord = new Map<string, Target>()
         const failed: Array<{ id: string; errors: unknown }> = []
+        const addTarget = (record: string, input: string, wi?: string, pi?: string) => {
+          const t = byRecord.get(record) ?? { record, inputs: [] }
+          t.inputs.push(input)
+          if (wi) t.workitemId = wi
+          if (pi) t.instanceId = pi
+          byRecord.set(record, t)
+        }
+        // SF returns 18-char ids; users may pass 15-char — key both.
+        const lookupOf = <T extends { Id: string }>(rows: T[]) => {
+          const m = new Map<string, T>()
+          for (const r of rows) { m.set(r.Id, r); m.set(r.Id.slice(0, 15), r) }
+          return m
+        }
 
         const wiIds = ids.filter(id => id.startsWith('04i'))
         if (wiIds.length > 0) {
-          const res = await conn.query<{ Id: string; ProcessInstance: { TargetObjectId: string } | null }>(
-            `SELECT Id, ProcessInstance.TargetObjectId FROM ProcessInstanceWorkitem WHERE Id IN (${quoted(wiIds)})`)
-          for (const r of res.records) {
-            if (r.ProcessInstance?.TargetObjectId) targetByInput.set(r.Id, r.ProcessInstance.TargetObjectId)
+          const res = await conn.query<{ Id: string; ProcessInstanceId: string; ProcessInstance: { TargetObjectId: string } | null }>(
+            `SELECT Id, ProcessInstanceId, ProcessInstance.TargetObjectId FROM ProcessInstanceWorkitem WHERE Id IN (${quoted(wiIds)})`)
+          const found = lookupOf(res.records)
+          for (const id of wiIds) {
+            const r = found.get(clean(id)) ?? found.get(clean(id).slice(0, 15))
+            if (r?.ProcessInstance?.TargetObjectId) addTarget(r.ProcessInstance.TargetObjectId, id, r.Id, r.ProcessInstanceId)
+            else failed.push({ id, errors: 'workitem not found or already processed (approved/rejected/recalled)' })
           }
         }
 
@@ -72,51 +92,99 @@ insufficient-privileges error.`,
         if (piIds.length > 0) {
           const res = await conn.query<{ Id: string; TargetObjectId: string }>(
             `SELECT Id, TargetObjectId FROM ProcessInstance WHERE Id IN (${quoted(piIds)})`)
-          for (const r of res.records) targetByInput.set(r.Id, r.TargetObjectId)
-        }
-
-        for (const id of ids) {
-          if (id.startsWith('04i') || id.startsWith('04g')) {
-            if (!targetByInput.has(id)) {
-              failed.push({ id, errors: 'not found or already processed (approved/rejected/recalled)' })
-            }
-          } else {
-            targetByInput.set(id, clean(id))   // already a record id
+          const found = lookupOf(res.records)
+          for (const id of piIds) {
+            const r = found.get(clean(id)) ?? found.get(clean(id).slice(0, 15))
+            if (r) addTarget(r.TargetObjectId, id, undefined, r.Id)
+            else failed.push({ id, errors: 'process instance not found' })
           }
         }
 
-        // Multiple workitems can point at the same record — recall each
-        // record once.
-        const recordToInputs = new Map<string, string[]>()
-        for (const [input, record] of targetByInput) {
-          const list = recordToInputs.get(record) ?? []
-          list.push(input)
-          recordToInputs.set(record, list)
+        for (const id of ids) {
+          if (!id.startsWith('04i') && !id.startsWith('04g')) addTarget(clean(id), id)
         }
 
-        // One request per record: invocable-action batches share a
+        const actionUrl    = `/services/data/v${conn.version}/actions/standard/recallApprovalSubmission`
+        const approvalsUrl = `/services/data/v${conn.version}/process/approvals`
+        const recalled: Array<{ recordId: string; method: string; status?: string }> = []
+
+        // One record per request: invocable-action batches share a
         // transaction, so a single bad record must not roll back the rest.
-        const actionUrl = `/services/data/v${conn.version}/actions/standard/recallApprovalSubmission`
-        const recalled: Array<{ recordId: string; instanceStatus?: string }> = []
-        for (const [recordId, inputs] of recordToInputs) {
+        for (const t of byRecord.values()) {
+          const errs: Record<string, unknown> = {}
+          let done = false
+
+          // PATH 1 — unified approvals framework. recallApprovalSubmission
+          // requires an ApprovalSubmission id (9iP...), resolved via SOQL by
+          // the target record. Classic approval processes have no such row —
+          // fall through to PATH 2.
           try {
-            const res = await conn.request<Array<{ isSuccess: boolean; errors: unknown; outputValues?: { instanceStatus?: string } | null }>>({
-              method: 'POST',
-              url:    actionUrl,
-              body:   JSON.stringify({ inputs: [{
-                contextId: recordId,
-                comments:  comment ?? 'Recalled via Archon AI'
-              }] }),
-              headers: { 'Content-Type': 'application/json' }
-            })
-            const r = res[0]
-            if (r?.isSuccess === true) {
-              recalled.push({ recordId, instanceStatus: r.outputValues?.instanceStatus })
+            const subs = await conn.query<{ Id: string }>(
+              `SELECT Id FROM ApprovalSubmission WHERE RelatedRecordId = '${clean(t.record)}' ORDER BY CreatedDate DESC LIMIT 1`)
+            const subId = subs.records[0]?.Id
+            if (subId) {
+              const res = await conn.request<Array<{ isSuccess: boolean; errors: unknown; outputValues?: { instanceStatus?: string } | null }>>({
+                method: 'POST',
+                url:    actionUrl,
+                body:   JSON.stringify({ inputs: [{ approvalSubmissionId: subId, comments }] }),
+                headers: { 'Content-Type': 'application/json' }
+              })
+              const r = res[0]
+              if (r?.isSuccess === true) {
+                recalled.push({ recordId: t.record, method: 'approvalSubmission', status: r.outputValues?.instanceStatus })
+                done = true
+              } else {
+                errs.approvalSubmission = r?.errors ?? 'unknown error'
+              }
             } else {
-              for (const id of inputs) failed.push({ id, errors: r?.errors ?? 'unknown error' })
+              errs.approvalSubmission = 'no ApprovalSubmission row for this record (classic approval process)'
             }
-          } catch (err: any) {
-            for (const id of inputs) failed.push({ id, errors: err?.message ?? String(err) })
+          } catch (e: any) {
+            errs.approvalSubmission = e?.message ?? String(e)
+          }
+
+          // PATH 2 — classic approval processes: /process/approvals with
+          // actionType Removed on the workitem (then the process instance).
+          if (!done) {
+            try {
+              let wi = t.workitemId
+              let pi = t.instanceId
+              if (!wi && !pi) {
+                const q = await conn.query<{ Id: string; ProcessInstanceId: string }>(
+                  `SELECT Id, ProcessInstanceId FROM ProcessInstanceWorkitem
+                   WHERE ProcessInstance.TargetObjectId = '${clean(t.record)}'
+                   ORDER BY CreatedDate DESC LIMIT 1`)
+                wi = q.records[0]?.Id
+                pi = q.records[0]?.ProcessInstanceId
+              }
+              let classicErr: unknown = 'no pending approval workitem found for this record'
+              for (const ctx of [wi, pi].filter(Boolean) as string[]) {
+                try {
+                  const res = await conn.request<Array<{ success: boolean; errors?: unknown }>>({
+                    method: 'POST',
+                    url:    approvalsUrl,
+                    body:   JSON.stringify({ requests: [{ actionType: 'Removed', contextId: ctx, comments }] }),
+                    headers: { 'Content-Type': 'application/json' }
+                  })
+                  const r = res[0]
+                  if (r?.success === true) {
+                    recalled.push({ recordId: t.record, method: 'processApprovals' })
+                    done = true
+                    break
+                  }
+                  classicErr = r?.errors ?? classicErr
+                } catch (e: any) {
+                  classicErr = e?.message ?? String(e)
+                }
+              }
+              if (!done) errs.processApprovals = classicErr
+            } catch (e: any) {
+              errs.processApprovals = e?.message ?? String(e)
+            }
+          }
+
+          if (!done) {
+            for (const id of t.inputs) failed.push({ id, errors: errs })
           }
         }
 
