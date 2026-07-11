@@ -27,88 +27,104 @@ function chunk<T>(arr: T[], size: number): T[][] {
 export function registerRecallApprovals(server: McpServer, req: Request, sessionId: string) {
   server.tool(
     'recallApprovals',
-    `Bulk-recalls (revokes) pending approval requests. Removes the workitems
-from every approver's queue and sets the process to Removed.
+    `Bulk-recalls (revokes) pending approval submissions via the standard
+recallApprovalSubmission action. Removes the workitems from every
+approver's queue and sets the process status to Removed.
 
 SAFETY: ALWAYS confirm with the user before recalling — recall cannot be
 undone; records must be re-submitted for approval.
 
-INPUT: ProcessInstanceWorkitem Ids (04i...) — get them via soqlQuery on
-ProcessInstanceWorkitem first. Processes any number of ids (auto-chunked).`,
+INPUT: pass whichever ids you have — target RECORD Ids (Opportunity 006...,
+Case 500..., custom object...), ProcessInstanceWorkitem Ids (04i...), or
+ProcessInstance Ids (04g...). Workitem/instance ids are resolved to their
+target records automatically.
+
+LIMITS: the calling user must be the original submitter or a System
+Administrator, and the approval process must have "Allow submitters to
+recall approval requests" enabled — otherwise items fail with an
+insufficient-privileges error.`,
     {
-      workitemIds: z.array(z.string()).min(1).describe('ProcessInstanceWorkitem Ids (04i...) to recall.'),
-      comment: z.string().optional().describe('Optional comment stored on each recall action.')
+      ids: z.array(z.string()).min(1).describe('Record Ids pending approval, or ProcessInstanceWorkitem (04i...) / ProcessInstance (04g...) Ids.'),
+      comment: z.string().optional().describe('Optional comment stored in the approval history.')
     },
-    async ({ workitemIds, comment }) => {
+    async ({ ids, comment }) => {
       const conn = await resolveSFConnection(req, sessionId)
       if (!conn) return notAuthenticatedError(process.env.BASE_URL!)
       try {
-        // Map workitem → ProcessInstance up front. Also filters out ids that
-        // were already processed between the user's list call and now.
-        const idList = workitemIds.map(id => `'${String(id).replace(/['\\]/g, '')}'`).join(',')
-        const wiRes = await conn.query<{ Id: string; ProcessInstanceId: string }>(
-          `SELECT Id, ProcessInstanceId FROM ProcessInstanceWorkitem WHERE Id IN (${idList})`)
-        const instanceByWorkitem = new Map(wiRes.records.map(r => [r.Id, r.ProcessInstanceId]))
+        const clean = (s: string) => String(s).replace(/['\\]/g, '')
+        const quoted = (arr: string[]) => arr.map(id => `'${clean(id)}'`).join(',')
 
-        const results: Array<{ workitemId: string; success: boolean; errors?: unknown }> = []
-        for (const id of workitemIds) {
-          if (!instanceByWorkitem.has(id)) {
-            results.push({ workitemId: id, success: false,
-              errors: 'not found or already processed (approved/rejected/recalled)' })
+        // Resolve 04i (workitem) and 04g (process instance) ids to their
+        // target record ids — the recall action wants the RECORD id.
+        const targetByInput = new Map<string, string>()
+        const failed: Array<{ id: string; errors: unknown }> = []
+
+        const wiIds = ids.filter(id => id.startsWith('04i'))
+        if (wiIds.length > 0) {
+          const res = await conn.query<{ Id: string; ProcessInstance: { TargetObjectId: string } | null }>(
+            `SELECT Id, ProcessInstance.TargetObjectId FROM ProcessInstanceWorkitem WHERE Id IN (${quoted(wiIds)})`)
+          for (const r of res.records) {
+            if (r.ProcessInstance?.TargetObjectId) targetByInput.set(r.Id, r.ProcessInstance.TargetObjectId)
           }
         }
 
-        const approvalsUrl = `/services/data/v${conn.version}/process/approvals`
-        const recallOne = async (contextId: string) => {
-          const payload = { requests: [{
-            actionType: 'Removed',
-            contextId,
-            comments: comment ?? 'Recalled via Archon AI'
-          }] }
-          const res = await conn.request<Array<{ success: boolean; errors?: unknown }>>({
-            method: 'POST',
-            url:    approvalsUrl,
-            body:   JSON.stringify(payload),
-            headers: { 'Content-Type': 'application/json' }
-          })
-          return res[0]
+        const piIds = ids.filter(id => id.startsWith('04g'))
+        if (piIds.length > 0) {
+          const res = await conn.query<{ Id: string; TargetObjectId: string }>(
+            `SELECT Id, TargetObjectId FROM ProcessInstance WHERE Id IN (${quoted(piIds)})`)
+          for (const r of res.records) targetByInput.set(r.Id, r.TargetObjectId)
         }
 
-        // Some org versions accept the workitem id as contextId, others gack
-        // and want the ProcessInstance id — try workitem first, then fall
-        // back per item. One item's failure never blocks the rest.
-        for (const [wiId, piId] of instanceByWorkitem) {
+        for (const id of ids) {
+          if (id.startsWith('04i') || id.startsWith('04g')) {
+            if (!targetByInput.has(id)) {
+              failed.push({ id, errors: 'not found or already processed (approved/rejected/recalled)' })
+            }
+          } else {
+            targetByInput.set(id, clean(id))   // already a record id
+          }
+        }
+
+        // Multiple workitems can point at the same record — recall each
+        // record once.
+        const recordToInputs = new Map<string, string[]>()
+        for (const [input, record] of targetByInput) {
+          const list = recordToInputs.get(record) ?? []
+          list.push(input)
+          recordToInputs.set(record, list)
+        }
+
+        // One request per record: invocable-action batches share a
+        // transaction, so a single bad record must not roll back the rest.
+        const actionUrl = `/services/data/v${conn.version}/actions/standard/recallApprovalSubmission`
+        const recalled: Array<{ recordId: string; instanceStatus?: string }> = []
+        for (const [recordId, inputs] of recordToInputs) {
           try {
-            const r = await recallOne(wiId)
-            if (r?.success === true) {
-              results.push({ workitemId: wiId, success: true })
-              continue
-            }
-            const retry = await recallOne(piId)
-            results.push({
-              workitemId: wiId,
-              success: retry?.success === true,
-              ...(retry?.success !== true && { errors: retry?.errors ?? r?.errors })
+            const res = await conn.request<Array<{ isSuccess: boolean; errors: unknown; outputValues?: { instanceStatus?: string } | null }>>({
+              method: 'POST',
+              url:    actionUrl,
+              body:   JSON.stringify({ inputs: [{
+                contextId: recordId,
+                comments:  comment ?? 'Recalled via Archon AI'
+              }] }),
+              headers: { 'Content-Type': 'application/json' }
             })
-          } catch (errFirst) {
-            try {
-              const retry = await recallOne(piId)
-              results.push({
-                workitemId: wiId,
-                success: retry?.success === true,
-                ...(retry?.success !== true && { errors: retry?.errors })
-              })
-            } catch (errSecond: any) {
-              results.push({ workitemId: wiId, success: false,
-                errors: errSecond?.message ?? String(errSecond) })
+            const r = res[0]
+            if (r?.isSuccess === true) {
+              recalled.push({ recordId, instanceStatus: r.outputValues?.instanceStatus })
+            } else {
+              for (const id of inputs) failed.push({ id, errors: r?.errors ?? 'unknown error' })
             }
+          } catch (err: any) {
+            for (const id of inputs) failed.push({ id, errors: err?.message ?? String(err) })
           }
         }
 
-        const recalled = results.filter(r => r.success).length
         return { content: [{ type: 'text', text: JSON.stringify({
-          requested: workitemIds.length, recalled,
-          failed: results.filter(r => !r.success)
+          requested: ids.length,
+          recalled:  recalled.length,
+          records:   recalled,
+          failed
         }) }] }
       } catch (err) {
         return sfApiError(err)
