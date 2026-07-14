@@ -19,6 +19,7 @@ import {
   registerRecallApprovals,
   registerReassignApprovals
 } from './approvals'
+import { registerSendEmail } from './email'
 
 /**
  * Static tool catalog for the public GET /tools endpoint.
@@ -40,7 +41,8 @@ export const TOOL_SUMMARIES = [
   { name: 'updateRelatedRecord',      readOnly: false, description: 'Update a related child record' },
   { name: 'deleteRelatedRecord',      readOnly: false, description: 'Delete a related child record' },
   { name: 'recallApprovals',          readOnly: false, description: 'Bulk recall/revoke pending approval requests' },
-  { name: 'reassignApprovals',        readOnly: false, description: 'Bulk reassign approvals: to a user, submitter’s manager, or escalate to approver’s manager' }
+  { name: 'reassignApprovals',        readOnly: false, description: 'Bulk reassign approvals: to a user, submitter’s manager, or escalate to approver’s manager' },
+  { name: 'sendEmail',                readOnly: false, description: 'Send an email: templates or custom body, To/CC/BCC, org-wide sender, merge fields, attachments' }
 ]
 
 export function registerAllTools(
@@ -62,5 +64,6 @@ export function registerAllTools(
   registerDeleteRelatedRecord(server, req, sessionId)
   registerRecallApprovals(server, req, sessionId)
   registerReassignApprovals(server, req, sessionId)
-  console.log('[MCP] 14 tools registered')
+  registerSendEmail(server, req, sessionId)
+  console.log('[MCP] 15 tools registered')
 }
