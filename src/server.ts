@@ -7,6 +7,7 @@ import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/
 import wellknownRouter from './routes/wellknown'
 import authRouter from './routes/auth'
 import { registerAllTools, TOOL_SUMMARIES } from './tools/index'
+import { parseCustomToolSpecs, registerCustomActionTools } from './tools/custom-actions'
 import { unlinkSession, storeVaultTokens } from './lib/session'
 
 const app = express()
@@ -21,7 +22,7 @@ app.use((req: any, res: any, next: any) => {
 })
 
 app.get('/', (req: any, res: any) => {
-  res.json({ name: 'salesforce-mcp', version: '1.4.0', build: 'v62-send-email', status: 'running' })
+  res.json({ name: 'salesforce-mcp', version: '1.5.0', build: 'v62-custom-tools', status: 'running' })
 })
 
 // Public, unauthenticated tool catalog — static metadata only, no execution.
@@ -104,7 +105,16 @@ app.post('/mcp', (req: any, res: any, next: any) => {
 
     // New session
     const mcpServer = new McpServer({ name: 'salesforce-mcp', version: '1.0.0' })
-    registerAllTools(mcpServer, req, crypto.randomUUID())
+    const newSessionId = crypto.randomUUID()
+    registerAllTools(mcpServer, req, newSessionId)
+
+    // Dynamic org-specific tools: ?custom=apex:ClassName,flow:Flow_Name
+    // Each is described live (schemas included) and registered as a
+    // first-class named tool — see tools/custom-actions.ts.
+    const customSpecs = parseCustomToolSpecs(req.query?.custom)
+    if (customSpecs.length > 0) {
+      await registerCustomActionTools(mcpServer, req, newSessionId, customSpecs)
+    }
 
     transport = new StreamableHTTPServerTransport({
       sessionIdGenerator: () => crypto.randomUUID(),
