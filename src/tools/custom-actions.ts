@@ -85,18 +85,27 @@ async function describeAction(conn: any, spec: CustomToolSpec): Promise<ActionDe
   return value
 }
 
+const SF_ID_RE = /^[a-zA-Z0-9]{15}([a-zA-Z0-9]{3})?$/
+
 /** Map a Salesforce action input type onto a zod schema. */
 function zodFor(input: ActionInput): z.ZodTypeAny {
   const t = String(input.type ?? '').toLowerCase()
   let base: z.ZodTypeAny
-  if (t.includes('boolean'))                                   base = z.boolean()
+  let idHint = ''
+  if (t === 'id' || t === 'reference') {
+    // Models love to pass placeholders ("OpportunityId") — pin the format
+    // in the schema AND the description.
+    base = z.string().regex(SF_ID_RE, 'Must be a real 15/18-character Salesforce record Id')
+    idHint = ' MUST be a real Salesforce record Id (15/18 chars, e.g. 006xx0000012345). Never a field name or placeholder — look the record up with soqlQuery first.'
+  }
+  else if (t.includes('boolean'))                              base = z.boolean()
   else if (t.includes('int') || t.includes('long'))            base = z.number().int()
   else if (t.includes('double') || t.includes('decimal') || t.includes('number') || t.includes('currency') || t.includes('percent')) base = z.number()
   else if ((input.maxOccurs ?? 1) > 1 || t.includes('list'))   base = z.array(z.any())
   else                                                         base = z.string()
 
-  const desc = [input.label, input.description].filter(Boolean).join(' — ')
-  if (desc) base = base.describe(desc)
+  const desc = [input.label, input.description].filter(Boolean).join(' — ') + idHint
+  if (desc.trim()) base = base.describe(desc.trim())
   return input.required === true ? base : base.optional()
 }
 
@@ -129,10 +138,16 @@ export async function registerCustomActionTools(
 
       const kind = spec.type === 'apex' ? 'Apex invocable action' : 'autolaunched Flow'
       const title = desc.label || spec.name
+      const idInputNames = desc.inputs
+        .filter(i => ['id', 'reference'].includes(String(i.type ?? '').toLowerCase()))
+        .map(i => i.name)
       const description =
         `${title} — a custom ${kind} from this Salesforce org.` +
         (desc.description ? `\n${desc.description}` : '') +
         `\nRuns with the connected user's permissions.` +
+        (idInputNames.length > 0
+          ? `\nID inputs (${idInputNames.join(', ')}) need REAL record Ids — if you only have a record name, run soqlQuery first to get its Id.`
+          : '') +
         ` If it creates or changes data, confirm with the user before calling.`
 
       server.tool(
@@ -151,6 +166,19 @@ export async function registerCustomActionTools(
             }
             console.log('[custom-tools] CALL', mcpToolName(spec),
               'args:', JSON.stringify(inputs).slice(0, 1000))
+
+            // Reject placeholder Ids BEFORE Salesforce does, with a message
+            // the model can act on (look the record up, call again).
+            for (const idName of idInputNames) {
+              const v = inputs[idName]
+              if (typeof v === 'string' && !SF_ID_RE.test(v)) {
+                return { content: [{ type: 'text' as const, text: JSON.stringify({
+                  error: 'INVALID_RECORD_ID',
+                  message: `Input '${idName}' must be a real Salesforce record Id (15/18 chars) — received '${v}'. ` +
+                    `Run soqlQuery to find the record (e.g. SELECT Id FROM Opportunity WHERE Name LIKE '%...%'), then call this tool again with the Id.`
+                }) }], isError: true }
+              }
+            }
             const res = await runConn.request<Array<{ isSuccess: boolean; errors: unknown; outputValues: Record<string, unknown> | null }>>({
               method: 'POST',
               url: `/services/data/v${runConn.version}/actions/custom/${spec.type}/${encodeURIComponent(spec.name)}`,
