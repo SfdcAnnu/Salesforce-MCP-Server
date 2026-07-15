@@ -22,7 +22,7 @@ app.use((req: any, res: any, next: any) => {
 })
 
 app.get('/', (req: any, res: any) => {
-  res.json({ name: 'salesforce-mcp', version: '1.5.1', build: 'v62-custom-tools-logging', status: 'running' })
+  res.json({ name: 'salesforce-mcp', version: '1.5.2', build: 'v62-id-guard', status: 'running' })
 })
 
 // Public, unauthenticated tool catalog — static metadata only, no execution.
