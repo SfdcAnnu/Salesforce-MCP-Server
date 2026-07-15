@@ -22,7 +22,7 @@ app.use((req: any, res: any, next: any) => {
 })
 
 app.get('/', (req: any, res: any) => {
-  res.json({ name: 'salesforce-mcp', version: '1.5.0', build: 'v62-custom-tools', status: 'running' })
+  res.json({ name: 'salesforce-mcp', version: '1.5.1', build: 'v62-custom-tools-logging', status: 'running' })
 })
 
 // Public, unauthenticated tool catalog — static metadata only, no execution.
@@ -92,6 +92,13 @@ app.post('/mcp', (req: any, res: any, next: any) => {
   next()
 }, async (req: any, res: any) => {
   try {
+    // One visibility point for EVERY tool invocation (generic + custom):
+    // the JSON-RPC envelope always crosses here. Args truncated; tokens
+    // never appear in the body, so this is safe to keep on.
+    if (req.body?.method === 'tools/call') {
+      console.log('[MCP] tools/call', req.body?.params?.name,
+        'args:', JSON.stringify(req.body?.params?.arguments ?? {}).slice(0, 1000))
+    }
     const sessionId = req.headers['mcp-session-id'] as string | undefined
 
     let transport: StreamableHTTPServerTransport

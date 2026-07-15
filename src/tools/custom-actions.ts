@@ -143,11 +143,14 @@ export async function registerCustomActionTools(
           const runConn = await resolveSFConnection(req, sessionId)
           if (!runConn) return notAuthenticatedError(process.env.BASE_URL!)
           try {
-            // Drop undefined/null so the action sees only provided inputs
+            // Drop undefined/null/empty so the action sees only real inputs —
+            // an empty string reaching Apex as an Id throws "Invalid id: ".
             const inputs: Record<string, unknown> = {}
             for (const [k, v] of Object.entries(args ?? {})) {
-              if (v !== undefined && v !== null) inputs[k] = v
+              if (v !== undefined && v !== null && v !== '') inputs[k] = v
             }
+            console.log('[custom-tools] CALL', mcpToolName(spec),
+              'args:', JSON.stringify(inputs).slice(0, 1000))
             const res = await runConn.request<Array<{ isSuccess: boolean; errors: unknown; outputValues: Record<string, unknown> | null }>>({
               method: 'POST',
               url: `/services/data/v${runConn.version}/actions/custom/${spec.type}/${encodeURIComponent(spec.name)}`,
@@ -155,6 +158,9 @@ export async function registerCustomActionTools(
               headers: { 'Content-Type': 'application/json' }
             })
             const r = res[0]
+            console.log('[custom-tools] RESULT', mcpToolName(spec),
+              'isSuccess:', r?.isSuccess === true,
+              JSON.stringify(r?.isSuccess === true ? r?.outputValues : r?.errors).slice(0, 800))
             if (r?.isSuccess === true) {
               return { content: [{ type: 'text' as const, text: JSON.stringify({
                 success: true,
